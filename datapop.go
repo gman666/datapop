@@ -3,10 +3,11 @@ package main
 import (
 	"fmt"
 	"github.com/icrowley/fake"
-	_ "github.com/go-sql-driver/mysql"
-	"github.com/rmulley/go-fast-sql"
+	"database/sql"
+	_ "github.com/lib/pq"
 	"strings"
 	"log"
+	"github.com/lib/pq"
 )
 
 type user struct {
@@ -22,28 +23,64 @@ type user struct {
 func main() {
 	var (
 		numUsers = 1000000
-		flush uint = 13000
 		err error
-		db *fastsql.DB
+		db *sql.DB
+		conString = "user=postgres password=x dbname=test sslmode=disable"
 	)
 
-	fmt.Printf("starting..\n")
+	fmt.Printf("starting..to write %d users\n", numUsers)
 
-	if db, err = fastsql.Open("mysql", "root:@tcp(localhost:3306)/test", flush); err != nil {
+	if db, err = sql.Open("postgres", conString); err != nil {
 		log.Fatalln(err)
 	}
 	defer db.Close()
 
+	if _, err = db.Exec("CREATE TABLE IF NOT EXISTS user_test (id serial PRIMARY KEY, " +
+		"firstname VARCHAR(100) DEFAULT NULL, " +
+		"lastname VARCHAR(100) DEFAULT NULL, " +
+		"email varchar(100) DEFAULT NULL, " +
+		"state varchar(20) DEFAULT NULL, " +
+		"postcode varchar(10) DEFAULT NULL)"); err != nil {
+			log.Fatalln(err)
+	}
+
+	txn, err := db.Begin()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	stmt, err := txn.Prepare(pq.CopyIn("user_test", "firstname", "lastname", "email", "state", "postcode"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	for i := 0; i < numUsers; i++ {
 		auser := generateUser(i)
-		insertUsers(db, err, auser)
+		insertUsers(stmt, err, auser)
 	}
+
+	// flush buffer
+	_, err = stmt.Exec()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = stmt.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = txn.Commit()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Printf("inserted %d users\n", numUsers)
 }
 
-func insertUsers(db *fastsql.DB, err error, auser user) {
-	if err = db.BatchInsert("INSERT INTO users (firstname, lastname, email, state, postcode) VALUES (?, ?, ?, ?, ?)",
-		auser.firstname, auser.lastname, auser.email, auser.state, auser.postcode); err != nil {
-			log.Fatalln(err)
+func insertUsers(stmt *sql.Stmt, err error, auser user) {
+	if _, err = stmt.Exec(auser.firstname, auser.lastname, auser.email, auser.state, auser.postcode); err != nil {
+		log.Fatalln(err)
 	}
 
 	//fmt.Printf("inserted: %s %s %s %s %s\n", auser.firstname, auser.lastname, auser.state, auser.postcode, auser.email)
@@ -52,9 +89,9 @@ func insertUsers(db *fastsql.DB, err error, auser user) {
 func generateUser(i int) user {
 	return user {
 		id: i,
-		email: strings.ToLower(fake.EmailAddress()),
 		firstname : fake.FirstName(),
 		lastname: fake.LastName(),
+		email: strings.ToLower(fake.EmailAddress()),
 		state: fake.StateAbbrev(),
 		postcode: fake.Zip(),
 	}
